@@ -39,12 +39,15 @@ class LevitonException(Exception):
 
     def __init__(self, status_code: int, name: str, message: str) -> None:
         """Initialize."""
-        super().__init__()
         self.status_code = status_code
         self.name = name
         self.message = message
+        super().__init__(f"[{status_code}] {name}: {message}")
         _LOGGER.error(
-            "\n- LevitionException\n- Status: %s\n- Name: %s\n- Message: %s, self.status_code, self.name, self.message"
+            "\n- LevitonException\n- Status: %s\n- Name: %s\n- Message: %s",
+            self.status_code,
+            self.name,
+            self.message,
         )
 
 
