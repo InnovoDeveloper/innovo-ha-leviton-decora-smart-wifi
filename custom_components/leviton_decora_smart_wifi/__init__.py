@@ -180,12 +180,12 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
     await coordinator.async_refresh()
 
     for residence in coordinator.data.residences:
-        if residence.id in conf_residences:
+        if residence.id and residence.id in conf_residences:
             device_registry.async_get_or_create(
                 config_entry_id=config_entry.entry_id,
                 configuration_url=CONFIGURATION_URL,
                 entry_type=dr.DeviceEntryType.SERVICE,
-                identifiers={(DOMAIN, str(residence.id))},
+                identifiers={generate_device_identifier(residence.id)},
                 manufacturer=DEVICE_INFO_MANUFACTURER,
                 model=DEVICE_INFO_MODEL_RESIDENCE,
                 name=residence.name,
