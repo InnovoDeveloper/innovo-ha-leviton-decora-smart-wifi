@@ -42,6 +42,7 @@ from .const import (
     ScanInterval,
     Timeout,
 )
+from .util import generate_device_identifier
 
 PLATFORMS = (
     Platform.BINARY_SENSOR,
@@ -111,7 +112,11 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
 
     conf_residences = options.get(CONF_RESIDENCES, data.get(CONF_RESIDENCES, []))
     conf_devices = options.get(CONF_DEVICES, data.get(CONF_DEVICES, []))
-    conf_identifiers = [(DOMAIN, conf_id) for conf_id in conf_residences + conf_devices]
+    conf_identifiers = [
+        generate_device_identifier(conf_id)
+        for conf_id in conf_residences + conf_devices
+    ]
+    _LOGGER.debug("Configured identifiers: %s", conf_identifiers)
 
     device_registry = dr.async_get(hass)
     device_entries = dr.async_entries_for_config_entry(
@@ -119,6 +124,11 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
         config_entry_id=config_entry.entry_id,
     )
     for device_entry in device_entries:
+        _LOGGER.debug(
+            "Device entry for: %s has identifiers: %s",
+            device_entry.name,
+            device_entry.identifiers,
+        )
         orphan_identifiers = [
             bool(device_identifier not in conf_identifiers)
             for device_identifier in device_entry.identifiers

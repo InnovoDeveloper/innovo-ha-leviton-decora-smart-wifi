@@ -24,6 +24,7 @@ from .const import (
     DOMAIN,
     UPDATE_NOTIFICATION,
 )
+from .util import generate_device_identifier
 
 
 class LevitonEntity(CoordinatorEntity[LevitonDataUpdateCoordinator]):
@@ -169,7 +170,7 @@ class LevitonEntity(CoordinatorEntity[LevitonDataUpdateCoordinator]):
             if self.device and self.device.id:
                 return dr.DeviceInfo(
                     configuration_url=CONFIGURATION_URL,
-                    identifiers={(DOMAIN, str(self.device.id))},
+                    identifiers={generate_device_identifier(self.device.id)},
                     manufacturer=self.device.manufacturer,
                     model=self.device.model,
                     name=self.device.name,
@@ -181,7 +182,7 @@ class LevitonEntity(CoordinatorEntity[LevitonDataUpdateCoordinator]):
             return dr.DeviceInfo(
                 configuration_url=CONFIGURATION_URL,
                 entry_type=dr.DeviceEntryType.SERVICE,
-                identifiers={(DOMAIN, str(self.residence.id))},
+                identifiers={generate_device_identifier(self.residence.id)},
                 manufacturer=DEVICE_INFO_MANUFACTURER,
                 model=DEVICE_INFO_MODEL_RESIDENCE,
                 name=self.residence.name,
