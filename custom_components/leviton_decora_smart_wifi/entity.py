@@ -21,7 +21,6 @@ from .const import (
     CONFIGURATION_URL,
     DEVICE_INFO_MANUFACTURER,
     DEVICE_INFO_MODEL_RESIDENCE,
-    DOMAIN,
     UPDATE_NOTIFICATION,
 )
 from .util import generate_device_identifier
@@ -177,7 +176,7 @@ class LevitonEntity(CoordinatorEntity[LevitonDataUpdateCoordinator]):
                     serial_number=self.device.serial,
                     suggested_area=self.device.room_name,
                     sw_version=self.device.version,
-                    via_device=(DOMAIN, str(self.residence.id)),
+                    via_device=generate_device_identifier(self.residence.id),
                 )
             return dr.DeviceInfo(
                 configuration_url=CONFIGURATION_URL,
