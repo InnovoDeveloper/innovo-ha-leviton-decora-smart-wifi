@@ -12,6 +12,7 @@ import requests
 from .const import API_ENDPOINT, FIRMWARE_APP_MAP, FirmwareAppID, LoginResult
 from .firmware import Firmware
 from .residence import Residence
+from .throttle import LoginThrottle
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -59,29 +60,48 @@ class LevitonAPI:
         authorization: str | None = None,
         save_location: str | None = None,
         user_id: str | None = None,
+        email: str | None = None,
+        password: str | None = None,
+        code: str | None = None,
+        on_token_refreshed: Callable[[str, dict[str, Any] | None], None] | None = None,
     ) -> None:
-        """Initialize."""
+        """Initialize.
+
+        ``email``/``password`` seed the stored credentials so that an
+        expired access token can be renewed without the user having to
+        reconfigure the integration. ``on_token_refreshed`` is invoked
+        with the new bearer and login response whenever that happens, so
+        the caller can persist them.
+        """
         self.authorization = authorization
         self.save_location = save_location
         self.user_id = user_id
 
         self.credentials: dict = {}
+        if email and password:
+            self.credentials = {"email": email, "password": password}
+            if code:
+                self.credentials["code"] = code
+        self.on_token_refreshed = on_token_refreshed
+        self.login_throttle = LoginThrottle()
         self.data: LevitonData = LevitonData()
         self.session = requests.Session()
         self.user_name: str | None = None
         self.login_response: dict[str, Any] | None = None
+        self._login_in_progress: bool = False
 
     def call(
         self,
         method: HTTPMethod,
         url: str,
         headers: dict | None = None,
+        authenticated: bool = True,
         **kwargs,
     ) -> list[dict] | dict[str, Any] | None:
         """Call."""
         if headers is None:
             headers = {}
-        if self.authorization:
+        if authenticated and self.authorization:
             headers["authorization"] = self.authorization
         _LOGGER.debug("Calling API with method: %s and URL: %s", method, url)
         response = self.refresh(
@@ -104,6 +124,10 @@ class LevitonAPI:
                 url="person/login",
                 params={"include": "user"},
                 data=data,
+                # Never present the old bearer here: when it is the very
+                # token being replaced, the server rejects the request
+                # before it looks at the credentials.
+                authenticated=False,
             )
             if response and isinstance(response, dict):
                 self.authorization = response["id"]
@@ -177,22 +201,75 @@ class LevitonAPI:
             )
             self.session = requests.Session()
             response = function()
-        if response.status_code != 200:
-            text = json.loads(response.text)
-            error = text["error"]
-            if all(
-                [
-                    response.status_code == 401,
-                    error["message"] == "Invalid Access Token",
-                ]
-            ):
-                self.login(
-                    email=self.credentials["email"],
-                    password=self.credentials["password"],
-                    code=self.credentials.get("code"),
-                )
-                response = function()
+        if response.status_code == 401 and self.refresh_authorization():
+            response = function()
         return response
+
+    def refresh_authorization(self) -> bool:
+        """Re-authenticate after a 401, subject to the login rate limit.
+
+        Any 401 is treated as "this bearer is no longer good". Leviton
+        has used more than one message for it -- ``Invalid Access Token``
+        and ``Authorization Required`` -- so matching on the text leaves
+        the integration permanently unauthenticated the moment the
+        wording changes.
+
+        Returns True only when a fresh token was obtained, meaning the
+        caller may retry its request.
+        """
+        if self._login_in_progress:
+            # Reached via the login call's own response; nothing to renew.
+            return False
+
+        if not self.credentials.get("email") or not self.credentials.get("password"):
+            _LOGGER.warning(
+                "Leviton rejected the access token but no stored credentials are "
+                "available to re-authenticate; reconfigure the integration"
+            )
+            return False
+
+        if not self.login_throttle.acquire():
+            _LOGGER.warning(
+                "Leviton rejected the access token; re-authentication is rate "
+                "limited for another %.0fs",
+                self.login_throttle.retry_after(),
+            )
+            return False
+
+        _LOGGER.info("Leviton rejected the access token; re-authenticating")
+        self._login_in_progress = True
+        try:
+            result = self.login(
+                email=self.credentials["email"],
+                password=self.credentials["password"],
+                code=self.credentials.get("code"),
+            )
+        except Exception:
+            self.login_throttle.record_failure()
+            _LOGGER.exception("Leviton re-authentication raised")
+            return False
+        finally:
+            self._login_in_progress = False
+
+        if result == LoginResult.SUCCESS:
+            self.login_throttle.record_success()
+            _LOGGER.info("Leviton re-authentication succeeded")
+            if self.on_token_refreshed and self.authorization:
+                try:
+                    self.on_token_refreshed(self.authorization, self.login_response)
+                except Exception:
+                    _LOGGER.exception("Leviton token persistence callback failed")
+            return True
+
+        self.login_throttle.record_failure(
+            locked_out=result == LoginResult.TOO_MANY_ATTEMPTS
+        )
+        _LOGGER.error(
+            "Leviton re-authentication failed (%s); next attempt permitted in %.0fs",
+            result,
+            self.login_throttle.retry_after(),
+        )
+        return False
 
     def save_response(
         self, response: dict[str, Any] | None, name: str = "response"

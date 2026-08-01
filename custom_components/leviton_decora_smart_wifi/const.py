@@ -11,6 +11,7 @@ CONFIGURATION_URL: str = "https://my.leviton.com/home"
 
 DATA_API: str = "api"
 DATA_COORDINATOR: str = "coordinator"
+DATA_OPTIONS_SNAPSHOT: str = "options_snapshot"
 DATA_WEBSOCKET: str = "websocket"
 
 CONF_LOGIN_RESPONSE: str = "login_response"

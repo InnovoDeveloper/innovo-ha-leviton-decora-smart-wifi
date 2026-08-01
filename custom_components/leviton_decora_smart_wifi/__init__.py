@@ -6,8 +6,11 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
+    CONF_CODE,
+    CONF_EMAIL,
     CONF_ID,
     CONF_NAME,
+    CONF_PASSWORD,
     CONF_SCAN_INTERVAL,
     CONF_TOKEN,
     Platform,
@@ -30,6 +33,7 @@ from .const import (
     CONFIGURATION_URL,
     DATA_API,
     DATA_COORDINATOR,
+    DATA_OPTIONS_SNAPSHOT,
     DATA_WEBSOCKET,
     DEFAULT_SAVE_LOCATION,
     DEFAULT_SAVE_RESPONSES,
@@ -149,10 +153,27 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
 
     conf_save_location = DEFAULT_SAVE_LOCATION if conf_save_responses else None
 
+    def persist_refreshed_token(
+        token: str, login_response: dict | None = None
+    ) -> None:
+        """Store a token obtained by an automatic re-authentication.
+
+        Deliberately not a ``@callback``: the REST layer invokes this from
+        an executor thread, so the config entry write is bounced onto the
+        event loop rather than run in place.
+        """
+        hass.loop.call_soon_threadsafe(
+            _async_persist_token, hass, config_entry, token, login_response
+        )
+
     api = LevitonAPI(
         save_location=conf_save_location,
         user_id=data[CONF_ID],
         authorization=data[CONF_TOKEN],
+        email=data.get(CONF_EMAIL),
+        password=data.get(CONF_PASSWORD),
+        code=data.get(CONF_CODE),
+        on_token_refreshed=persist_refreshed_token,
     )
 
     async def async_update_data() -> LevitonData:
@@ -197,6 +218,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
         CONF_DEVICES: conf_devices,
         DATA_API: api,
         DATA_COORDINATOR: coordinator,
+        DATA_OPTIONS_SNAPSHOT: dict(config_entry.options),
         UNDO_UPDATE_LISTENER: config_entry.add_update_listener(async_update_listener),
     }
 
@@ -206,6 +228,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
         coordinator,
         conf_residences,
         conf_devices,
+        api,
     )
     if websocket is not None:
         hass.data[DOMAIN][config_entry.entry_id][DATA_WEBSOCKET] = websocket
@@ -215,35 +238,71 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
     return True
 
 
+@callback
+def _async_persist_token(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    token: str,
+    login_response: dict | None,
+) -> None:
+    """Write a refreshed bearer token back to the config entry.
+
+    Only ``data`` is touched, never ``options``, which is what lets
+    ``async_update_listener`` tell an automatic token renewal apart from
+    a user changing the integration's settings. Reloading the entry on
+    every token refresh would tear down and rebuild every entity, and a
+    reload that itself re-authenticates would loop.
+    """
+    new_data = {**config_entry.data, CONF_TOKEN: token}
+    if login_response:
+        new_data[CONF_LOGIN_RESPONSE] = login_response
+    if new_data == dict(config_entry.data):
+        return
+    _LOGGER.debug("Persisting refreshed Leviton access token")
+    hass.config_entries.async_update_entry(entry=config_entry, data=new_data)
+
+
 async def _async_start_websocket(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
     coordinator: LevitonDataUpdateCoordinator,
     conf_residences: list[int],
     conf_devices: list[int],
+    api: LevitonAPI,
 ) -> LevitonWebSocket | None:
     """Open the MyLeviton WebSocket using the bearer already in config.
 
-    We deliberately do NOT call ``LevitonAPI.login`` from this path:
-    each re-login attempt counts toward Leviton's "too many failed
-    attempts" lockout, and a flapping WebSocket will burn through them.
-    Instead we synthesize the token payload from the bearer + user id
-    already persisted in the config entry. If that auth fails the WebSocket
-    client backs off ``AUTH_FAILURE_COOLDOWN`` (1h) before any retry.
+    We never call ``LevitonAPI.login`` directly from this path: each
+    re-login attempt counts toward Leviton's "too many failed attempts"
+    lockout, and a flapping WebSocket would burn through them. The token
+    payload is synthesized from the bearer + user id already persisted in
+    the config entry, and if that auth fails we go through
+    ``api.refresh_authorization``, which is rate limited by the same
+    ``LoginThrottle`` the REST layer uses.
     """
-    bearer = config_entry.data.get(CONF_TOKEN)
     user_id = config_entry.data.get(CONF_ID)
-    if not bearer or not user_id:
-        _LOGGER.warning("Leviton WebSocket disabled: bearer/user id missing")
+    if not user_id:
+        _LOGGER.warning("Leviton WebSocket disabled: user id missing")
+        return None
+    if not config_entry.data.get(CONF_TOKEN) and not config_entry.data.get(
+        CONF_PASSWORD
+    ):
+        _LOGGER.warning("Leviton WebSocket disabled: no token and no credentials")
         return None
 
     @callback
     def token_provider() -> dict | None:
-        # Re-read from config_entry on every reconnect so a re-auth via
-        # the options flow propagates without an HA restart. Prefer the
-        # full login response object captured at config-flow time — the
-        # cloud's WebSocket auth historically needs the entire response, not
-        # just the bearer + user id.
+        # A login performed by the re-auth path is the freshest source of
+        # truth: persisting it to the config entry is asynchronous, so
+        # reading the entry straight after a refresh can still return the
+        # token that just got rejected.
+        if isinstance(api.login_response, dict) and api.login_response.get("id"):
+            return api.login_response
+        # Otherwise re-read from config_entry on every reconnect so a
+        # re-auth via the options flow propagates without an HA restart.
+        # Prefer the full login response object captured at config-flow
+        # time — the cloud's WebSocket auth historically needs the entire
+        # response, not just the bearer + user id.
         full = config_entry.data.get(CONF_LOGIN_RESPONSE)
         if isinstance(full, dict) and full.get("id"):
             return full
@@ -277,10 +336,16 @@ async def _async_start_websocket(
     _LOGGER.debug(
         "Leviton WebSocket: starting client with %d subscription(s)", len(subs)
     )
+
+    async def async_refresh_token() -> bool:
+        """Renew the bearer token for the WebSocket, subject to throttling."""
+        return await hass.async_add_executor_job(api.refresh_authorization)
+
     websocket = LevitonWebSocket(
         session=async_get_clientsession(hass),
         token_provider=token_provider,
         on_notification=on_notification,
+        token_refresher=async_refresh_token,
     )
     websocket.set_subscriptions(subs)
     websocket.start()
@@ -330,5 +395,21 @@ async def async_unload_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> 
 
 
 async def async_update_listener(hass: HomeAssistant, config_entry: ConfigEntry) -> None:
-    """Handle options update."""
+    """Handle options update.
+
+    This listener fires for any entry update, including the ``data``-only
+    write that persists a refreshed access token. Reloading on those is
+    both wasteful and dangerous -- the reload re-runs setup, which can
+    re-authenticate, which updates the entry again. Only reload when the
+    options the user controls have actually changed.
+    """
+    entry_data = hass.data.get(DOMAIN, {}).get(config_entry.entry_id)
+    if entry_data is not None:
+        previous = entry_data.get(DATA_OPTIONS_SNAPSHOT)
+        current = dict(config_entry.options)
+        if previous == current:
+            _LOGGER.debug("Leviton entry updated without options change; not reloading")
+            return
+        entry_data[DATA_OPTIONS_SNAPSHOT] = current
+
     await hass.config_entries.async_reload(config_entry.entry_id)
