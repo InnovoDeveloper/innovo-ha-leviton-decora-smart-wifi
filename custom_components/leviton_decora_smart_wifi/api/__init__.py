@@ -99,16 +99,25 @@ class LevitonAPI:
         **kwargs,
     ) -> list[dict] | dict[str, Any] | None:
         """Call."""
-        if headers is None:
-            headers = {}
-        if authenticated and self.authorization:
-            headers["authorization"] = self.authorization
-        _LOGGER.debug("Calling API with method: %s and URL: %s", method, url)
-        response = self.refresh(
-            lambda: self.session.request(
-                method=method, url=f"{API_ENDPOINT}/{url}", headers=headers, **kwargs
+        base_headers = dict(headers) if headers else {}
+
+        def request() -> requests.Response:
+            # The authorization header is built per attempt on purpose.
+            # ``refresh`` replays this request after re-authenticating, and
+            # a header dict captured beforehand would replay the very
+            # token that was just rejected.
+            request_headers = dict(base_headers)
+            if authenticated and self.authorization:
+                request_headers["authorization"] = self.authorization
+            return self.session.request(
+                method=method,
+                url=f"{API_ENDPOINT}/{url}",
+                headers=request_headers,
+                **kwargs,
             )
-        )
+
+        _LOGGER.debug("Calling API with method: %s and URL: %s", method, url)
+        response = self.refresh(request)
         response = self.parse_response(response=response)
         self.save_response(response=response, name=url)
         return response
