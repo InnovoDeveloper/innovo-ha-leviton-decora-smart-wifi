@@ -6,15 +6,19 @@ the official myapp.leviton.com bundle (``authenticateSocketConnection``
 wired to ``onOpen``) and the homebridge-myleviton plugin.
 
 Auth model used here:
-- We do NOT call ``LevitonAPI.login`` from this client. The bearer token
-  already in the config entry is enough to synthesize a token payload.
-- If auth fails, we back off ``AUTH_FAILURE_COOLDOWN`` (default 1 hour)
-  before any retry, to avoid hammering Leviton's auth endpoint and
-  locking the account out.
+- We never call ``LevitonAPI.login`` directly. The bearer token already
+  in the config entry is enough to synthesize a token payload.
+- If auth fails, we ask the owning integration for a refreshed token via
+  ``token_refresher``. That path is rate limited by the shared
+  ``LoginThrottle``, so a permanently bad credential set can only ever
+  produce a handful of login calls per hour.
+- If no fresh token is forthcoming, we back off ``AUTH_FAILURE_COOLDOWN``
+  (default 1 hour) before retrying, so we never hammer Leviton's auth
+  endpoint and lock the account out.
 """
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 import contextlib
 import json
 import logging
@@ -37,6 +41,10 @@ MAX_RECONNECT_DELAY = 600.0
 # token is bad. The integration's polling layer continues to work.
 AUTH_FAILURE_COOLDOWN = 3600.0
 
+# Short pause after a successful token refresh before reconnecting, so a
+# server-side rejection loop still cannot spin.
+POST_REFRESH_DELAY = 5.0
+
 CHALLENGE_TIMEOUT = 10.0
 
 
@@ -48,11 +56,13 @@ class LevitonWebSocket:
         session: aiohttp.ClientSession,
         token_provider: Callable[[], dict[str, Any] | None],
         on_notification: Callable[[dict[str, Any]], None],
+        token_refresher: Callable[[], Awaitable[bool]] | None = None,
     ) -> None:
         """Initialize."""
         self._session = session
         self._token_provider = token_provider
         self._on_notification = on_notification
+        self._token_refresher = token_refresher
         self._subscriptions: list[tuple[str, int]] = []
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._task: asyncio.Task | None = None
@@ -81,7 +91,7 @@ class LevitonWebSocket:
         if self._task:
             try:
                 await asyncio.wait_for(self._task, timeout=5.0)
-            except TimeoutError, asyncio.CancelledError:
+            except (TimeoutError, asyncio.CancelledError):
                 self._task.cancel()
 
     async def _run(self) -> None:
@@ -89,6 +99,8 @@ class LevitonWebSocket:
         while not self._stop.is_set():
             token = self._token_provider()
             if not token or "id" not in token:
+                if await self._async_refresh_token():
+                    continue
                 _LOGGER.error(
                     "Leviton WebSocket: no token available; sleeping for %.0fs",
                     AUTH_FAILURE_COOLDOWN,
@@ -108,8 +120,19 @@ class LevitonWebSocket:
                 self._ws = None
 
             if outcome == "auth_failed":
+                # The usual cause is an expired bearer. Ask for a fresh
+                # one; the throttle behind this decides whether a login
+                # is actually permitted right now.
+                if await self._async_refresh_token():
+                    _LOGGER.info(
+                        "Leviton WebSocket: token refreshed, reconnecting"
+                    )
+                    await self._sleep_or_stop(POST_REFRESH_DELAY)
+                    delay = INITIAL_RECONNECT_DELAY
+                    continue
                 _LOGGER.warning(
-                    "Leviton WebSocket auth failed; cooling down for %.0fs to avoid account lockout",
+                    "Leviton WebSocket auth failed and no fresh token is available; "
+                    "cooling down for %.0fs to avoid account lockout",
                     AUTH_FAILURE_COOLDOWN,
                 )
                 await self._sleep_or_stop(AUTH_FAILURE_COOLDOWN)
@@ -122,6 +145,23 @@ class LevitonWebSocket:
             if not self._stop.is_set():
                 await self._sleep_or_stop(delay)
                 delay = min(delay * 2, MAX_RECONNECT_DELAY)
+
+    async def _async_refresh_token(self) -> bool:
+        """Ask the integration to renew the bearer token.
+
+        Returns True only when a genuinely new token was obtained. The
+        rate limiting lives in the refresher itself, so returning False
+        here means "not now" and the caller must back off.
+        """
+        if self._token_refresher is None:
+            return False
+        try:
+            return await self._token_refresher()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _LOGGER.exception("Leviton WebSocket token refresh raised")
+            return False
 
     async def _sleep_or_stop(self, seconds: float) -> None:
         with contextlib.suppress(TimeoutError):
