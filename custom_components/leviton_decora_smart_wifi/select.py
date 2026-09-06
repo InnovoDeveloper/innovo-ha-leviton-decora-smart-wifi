@@ -1,7 +1,5 @@
 """Support for Leviton Decora Smart Wi-Fi select entities."""
 
-from __future__ import annotations
-
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -12,8 +10,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from . import LevitonEntity
 from .const import CONF_DEVICES, CONF_RESIDENCES, DATA_COORDINATOR, DOMAIN
+from .entity import LevitonEntity
 
 
 @dataclass(frozen=True)
@@ -34,7 +32,7 @@ SELECT_DESCRIPTIONS: list[LevitonSelectEntityDescription] = [
         name="Auto Shutoff",
         options_key="auto_shutoff_options",
         icon="mdi:timer",
-        is_supported=lambda device: not device.has_motion_sensor and not device.is_gfci,
+        is_supported=lambda device: device.is_auto_shutoff_capable,
     ),
     LevitonSelectEntityDescription(
         key="away_activity",
@@ -125,7 +123,7 @@ SELECT_DESCRIPTIONS: list[LevitonSelectEntityDescription] = [
         name="Status LED Behavior",
         options_key="status_led_behavior_options",
         icon="mdi:led-on",
-        is_supported=lambda device: not device.is_controller and not device.is_gfci,
+        is_supported=lambda device: device.is_status_led_behavior_capable,
     ),
 ]
 
