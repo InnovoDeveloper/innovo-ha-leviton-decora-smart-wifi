@@ -1,6 +1,9 @@
 """Leviton API."""
 
-from __future__ import annotations
+import logging
+from http import HTTPMethod
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class Button:
@@ -44,8 +47,20 @@ class Button:
         """Press."""
         for action in self.actions:
             for parameter in action.parameters:
+                if not parameter.value:
+                    # Home/Away and other unconfigured buttons carry a
+                    # placeholder parameterValue of 0 and are not bound to a
+                    # residential activity; executing id=0 returns HTTP 500.
+                    _LOGGER.warning(
+                        "Leviton button '%s' (configType=%s) is not bound to an "
+                        "activity (parameterValue=%s); nothing to execute",
+                        self.text,
+                        self.config_type,
+                        parameter.value,
+                    )
+                    continue
                 self.api.call(
-                    method="post",
+                    method=HTTPMethod.POST,
                     url="residentialactivities/execute",
                     params={"id": parameter.value},
                 )

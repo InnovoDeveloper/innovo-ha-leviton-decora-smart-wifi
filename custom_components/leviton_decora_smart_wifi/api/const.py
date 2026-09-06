@@ -4,16 +4,19 @@ from enum import IntEnum, StrEnum
 
 API_ENDPOINT = "https://my.leviton.com/api"
 
-LOGIN_CODE_INVALID = "login_code_invalid"
-LOGIN_CODE_REQUIRED = "login_code_required"
-LOGIN_FAILED = "login_failed"
-LOGIN_SUCCESS = "login_success"
-LOGIN_TOO_MANY_ATTEMPTS = "login_too_many_attempts"
-
-
 DEVICE_MODEL = "model"
 DEVICE_TYPE = "type"
 DEVICE_GENERATION = "generation"
+
+
+class LoginResult(StrEnum):
+    """Login result."""
+
+    CODE_INVALID = "code_invalid"
+    CODE_REQUIRED = "code_required"
+    FAILED = "failed"
+    SUCCESS = "success"
+    TOO_MANY_ATTEMPTS = "too_many_attempts"
 
 
 class ControlTiming(StrEnum):
@@ -35,6 +38,7 @@ class DeviceGeneration(IntEnum):
 class DeviceType(StrEnum):
     """Device type."""
 
+    BRIDGE = "bridge"
     CONTROLLER = "controller"
     FAN = "fan"
     GFCI = "gfci"
@@ -253,8 +257,23 @@ SUPPORTED_DEVICES = [
         DEVICE_GENERATION: DeviceGeneration.TWO,
     },
     {
+        DEVICE_MODEL: "DN15S",
+        DEVICE_TYPE: [DeviceType.SWITCH],
+        DEVICE_GENERATION: DeviceGeneration.TWO,
+    },
+    {
+        DEVICE_MODEL: "DN6HD",
+        DEVICE_TYPE: [DeviceType.LIGHT],
+        DEVICE_GENERATION: DeviceGeneration.TWO,
+    },
+    {
         DEVICE_MODEL: "D2SCS",
         DEVICE_TYPE: [DeviceType.CONTROLLER, DeviceType.SWITCH],
+        DEVICE_GENERATION: DeviceGeneration.TWO,
+    },
+    {
+        DEVICE_MODEL: "MLWSB",
+        DEVICE_TYPE: [DeviceType.BRIDGE],
         DEVICE_GENERATION: DeviceGeneration.TWO,
     },
     {
@@ -307,6 +326,12 @@ SUPPORTED_DEVICES = [
         DEVICE_TYPE: [DeviceType.LIGHT],
         DEVICE_GENERATION: DeviceGeneration.ONE,
     },
+]
+
+SUPPORTED_DEVICES_BRIDGE = [
+    device[DEVICE_MODEL]
+    for device in SUPPORTED_DEVICES
+    if DeviceType.BRIDGE in device[DEVICE_TYPE]
 ]
 
 SUPPORTED_DEVICES_CONTROLLER = [
@@ -485,3 +510,22 @@ STATUS_MAP = {
     "AWAY": Status.AWAY,
     "HOME": Status.HOME,
 }
+
+
+class FirmwareAppID(StrEnum):
+    """Firmware App ID."""
+
+    DECORA_SMART = "decora_smart"
+    DECORA_SMART_2 = "decora_smart_2"
+
+
+FIRMWARE_APP_MAP = {
+    DeviceGeneration.ONE: FirmwareAppID.DECORA_SMART,
+    DeviceGeneration.TWO: FirmwareAppID.DECORA_SMART_2,
+}
+
+
+class ReleaseURL(StrEnum):
+    """Release URL."""
+
+    GENERATION_TWO = "https://leviton.com/support/resources/product-support/decora-smart-support/decora-smart-wi-fi/decora-smart-wi-fi-2nd-generation-firmware-release-notes"

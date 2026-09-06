@@ -1,8 +1,7 @@
 """Leviton API."""
 
-from __future__ import annotations
-
 from collections.abc import Callable
+from http import HTTPMethod
 import json
 import logging
 from pathlib import Path
@@ -10,16 +9,10 @@ from typing import Any
 
 import requests
 
-from .const import (
-    API_ENDPOINT,
-    LOGIN_CODE_INVALID,
-    LOGIN_CODE_REQUIRED,
-    LOGIN_FAILED,
-    LOGIN_SUCCESS,
-    LOGIN_TOO_MANY_ATTEMPTS,
-)
+from .const import API_ENDPOINT, FIRMWARE_APP_MAP, FirmwareAppID, LoginResult
 from .firmware import Firmware
 from .residence import Residence
+from .throttle import LoginThrottle
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -32,14 +25,14 @@ class LevitonData:
         self.data = data if data is not None else {}
 
     @property
+    def firmware(self) -> dict[str, Firmware]:
+        """Firmware."""
+        return self.data.get("firmware", {})
+
+    @property
     def residences(self) -> list[Residence]:
         """Residences."""
         return self.data.get("residences", [])
-
-    @property
-    def firmware(self) -> list[Firmware]:
-        """Firmware."""
-        return self.data.get("firmware", [])
 
 
 class LevitonException(Exception):
@@ -47,12 +40,15 @@ class LevitonException(Exception):
 
     def __init__(self, status_code: int, name: str, message: str) -> None:
         """Initialize."""
-        super().__init__()
         self.status_code = status_code
         self.name = name
         self.message = message
+        super().__init__(f"[{status_code}] {name}: {message}")
         _LOGGER.error(
-            "\n- LevitionException\n- Status: %s\n- Name: %s\n- Message: %s, self.status_code, self.name, self.message"
+            "\n- LevitonException\n- Status: %s\n- Name: %s\n- Message: %s",
+            self.status_code,
+            self.name,
+            self.message,
         )
 
 
@@ -64,66 +60,83 @@ class LevitonAPI:
         authorization: str | None = None,
         save_location: str | None = None,
         user_id: str | None = None,
+        email: str | None = None,
+        password: str | None = None,
+        code: str | None = None,
+        on_token_refreshed: Callable[[str, dict[str, Any] | None], None] | None = None,
     ) -> None:
-        """Initialize."""
+        """Initialize.
+
+        ``email``/``password`` seed the stored credentials so that an
+        expired access token can be renewed without the user having to
+        reconfigure the integration. ``on_token_refreshed`` is invoked
+        with the new bearer and login response whenever that happens, so
+        the caller can persist them.
+        """
         self.authorization = authorization
         self.save_location = save_location
         self.user_id = user_id
 
         self.credentials: dict = {}
+        if email and password:
+            self.credentials = {"email": email, "password": password}
+            if code:
+                self.credentials["code"] = code
+        self.on_token_refreshed = on_token_refreshed
+        self.login_throttle = LoginThrottle()
         self.data: LevitonData = LevitonData()
         self.session = requests.Session()
         self.user_name: str | None = None
         self.login_response: dict[str, Any] | None = None
+        self._login_in_progress: bool = False
 
     def call(
         self,
-        method: str,
+        method: HTTPMethod,
         url: str,
         headers: dict | None = None,
+        authenticated: bool = True,
         **kwargs,
     ) -> list[dict] | dict[str, Any] | None:
         """Call."""
-        if method not in ("get", "post", "put"):
-            return None
-        if headers is None:
-            headers = {}
-        if self.authorization:
-            headers["authorization"] = self.authorization
+        base_headers = dict(headers) if headers else {}
+
+        def request() -> requests.Response:
+            # The authorization header is built per attempt on purpose.
+            # ``refresh`` replays this request after re-authenticating, and
+            # a header dict captured beforehand would replay the very
+            # token that was just rejected.
+            request_headers = dict(base_headers)
+            if authenticated and self.authorization:
+                request_headers["authorization"] = self.authorization
+            return self.session.request(
+                method=method,
+                url=f"{API_ENDPOINT}/{url}",
+                headers=request_headers,
+                **kwargs,
+            )
+
         _LOGGER.debug("Calling API with method: %s and URL: %s", method, url)
-        if method == "get":
-            response = self.refresh(
-                lambda: self.session.get(
-                    url=f"{API_ENDPOINT}/{url}", headers=headers, **kwargs
-                )
-            )
-        if method == "post":
-            response = self.refresh(
-                lambda: self.session.post(
-                    url=f"{API_ENDPOINT}/{url}", headers=headers, **kwargs
-                )
-            )
-        if method == "put":
-            response = self.refresh(
-                lambda: self.session.put(
-                    url=f"{API_ENDPOINT}/{url}", headers=headers, **kwargs
-                )
-            )
+        response = self.refresh(request)
         response = self.parse_response(response=response)
         self.save_response(response=response, name=url)
         return response
 
-    def login(self, email: str, password: str, code: str | None = None) -> str:
+    def login(self, email: str, password: str, code: str | None = None) -> LoginResult:
         """Login."""
         try:
             data = {"email": email, "password": password}
             if code:
                 data["code"] = code
             response = self.call(
-                method="post",
+                method=HTTPMethod.POST,
                 url="person/login",
                 params={"include": "user"},
                 data=data,
+                # Never present the old bearer here: when it is the very
+                # token being replaced, the server rejects the request
+                # before it looks at the credentials.
+                authenticated=False,
             )
             if response and isinstance(response, dict):
                 self.authorization = response["id"]
@@ -140,14 +153,14 @@ class LevitonAPI:
                     exception.message == "Login Failed",
                 ]
             ):
-                return LOGIN_FAILED
+                return LoginResult.FAILED
             if all(
                 [
                     exception.status_code == 403,
                     exception.message == "Too many failed attempts",
                 ]
             ):
-                return LOGIN_TOO_MANY_ATTEMPTS
+                return LoginResult.TOO_MANY_ATTEMPTS
             if all(
                 [
                     exception.status_code == 406,
@@ -155,17 +168,17 @@ class LevitonAPI:
                     == "Insufficient Data: Person uses two factor authentication. Requires code.",
                 ]
             ):
-                return LOGIN_CODE_REQUIRED
+                return LoginResult.CODE_REQUIRED
             if all(
                 [
                     exception.status_code == 408,
                     exception.message == "Error: Invalid code",
                 ]
             ):
-                return LOGIN_CODE_INVALID
-            return LOGIN_FAILED
+                return LoginResult.CODE_INVALID
+            return LoginResult.FAILED
         self.credentials = data
-        return LOGIN_SUCCESS
+        return LoginResult.SUCCESS
 
     def parse_response(self, response: requests.Response) -> dict[str, Any] | None:
         """Parse the response."""
@@ -192,25 +205,80 @@ class LevitonAPI:
         try:
             response = function()
         except requests.exceptions.ConnectionError:
-            _LOGGER.debug("Leviton REST connection dropped; retrying with fresh session")
+            _LOGGER.debug(
+                "Leviton REST connection dropped; retrying with fresh session"
+            )
             self.session = requests.Session()
             response = function()
-        if response.status_code != 200:
-            text = json.loads(response.text)
-            error = text["error"]
-            if all(
-                [
-                    response.status_code == 401,
-                    error["message"] == "Invalid Access Token",
-                ]
-            ):
-                self.login(
-                    email=self.credentials["email"],
-                    password=self.credentials["password"],
-                    code=self.credentials.get("code"),
-                )
-                response = function()
+        if response.status_code == 401 and self.refresh_authorization():
+            response = function()
         return response
+
+    def refresh_authorization(self) -> bool:
+        """Re-authenticate after a 401, subject to the login rate limit.
+
+        Any 401 is treated as "this bearer is no longer good". Leviton
+        has used more than one message for it -- ``Invalid Access Token``
+        and ``Authorization Required`` -- so matching on the text leaves
+        the integration permanently unauthenticated the moment the
+        wording changes.
+
+        Returns True only when a fresh token was obtained, meaning the
+        caller may retry its request.
+        """
+        if self._login_in_progress:
+            # Reached via the login call's own response; nothing to renew.
+            return False
+
+        if not self.credentials.get("email") or not self.credentials.get("password"):
+            _LOGGER.warning(
+                "Leviton rejected the access token but no stored credentials are "
+                "available to re-authenticate; reconfigure the integration"
+            )
+            return False
+
+        if not self.login_throttle.acquire():
+            _LOGGER.warning(
+                "Leviton rejected the access token; re-authentication is rate "
+                "limited for another %.0fs",
+                self.login_throttle.retry_after(),
+            )
+            return False
+
+        _LOGGER.info("Leviton rejected the access token; re-authenticating")
+        self._login_in_progress = True
+        try:
+            result = self.login(
+                email=self.credentials["email"],
+                password=self.credentials["password"],
+                code=self.credentials.get("code"),
+            )
+        except Exception:
+            self.login_throttle.record_failure()
+            _LOGGER.exception("Leviton re-authentication raised")
+            return False
+        finally:
+            self._login_in_progress = False
+
+        if result == LoginResult.SUCCESS:
+            self.login_throttle.record_success()
+            _LOGGER.info("Leviton re-authentication succeeded")
+            if self.on_token_refreshed and self.authorization:
+                try:
+                    self.on_token_refreshed(self.authorization, self.login_response)
+                except Exception:
+                    _LOGGER.exception("Leviton token persistence callback failed")
+            return True
+
+        self.login_throttle.record_failure(
+            locked_out=result == LoginResult.TOO_MANY_ATTEMPTS
+        )
+        _LOGGER.error(
+            "Leviton re-authentication failed (%s); next attempt permitted in %.0fs",
+            result,
+            self.login_throttle.retry_after(),
+        )
+        return False
 
     def save_response(
         self, response: dict[str, Any] | None, name: str = "response"
@@ -250,14 +318,14 @@ class LevitonAPI:
         """Get residences."""
         data = []
         permissions = self.call(
-            method="get",
+            method=HTTPMethod.GET,
             url=f"person/{self.user_id}/residentialpermissions",
         )
         if permissions and isinstance(permissions, list):
             for permission in permissions:
                 residential_account_id = permission["residentialAccountId"]
                 residences = self.call(
-                    method="get",
+                    method=HTTPMethod.GET,
                     url=f"residentialaccounts/{residential_account_id}/residences",
                 )
                 if residences and isinstance(residences, list):
@@ -272,11 +340,11 @@ class LevitonAPI:
                                 ]
                             ):
                                 residence["activities"] = self.call(
-                                    method="get",
+                                    method=HTTPMethod.GET,
                                     url=f"residences/{residence_id}/residentialactivities",
                                 )
                                 residence["devices"] = self.call(
-                                    method="get",
+                                    method=HTTPMethod.GET,
                                     url=f"residences/{residence_id}/iotswitches",
                                     headers={
                                         "filter": json.dumps(
@@ -285,7 +353,7 @@ class LevitonAPI:
                                     },
                                 )
                                 residence["rooms"] = self.call(
-                                    method="get",
+                                    method=HTTPMethod.GET,
                                     url=f"residences/{residence_id}/residentialrooms",
                                     headers={
                                         "filter": json.dumps(
@@ -294,26 +362,27 @@ class LevitonAPI:
                                     },
                                 )
                                 residence["schedules"] = self.call(
-                                    method="get",
+                                    method=HTTPMethod.GET,
                                     url=f"residences/{residence_id}/residentialschedules",
                                 )
                                 data.append(Residence(self, residence))
         return data
 
-    def get_firmware(self, residences: list[Residence]) -> list[Firmware]:
+    def get_firmware(self, residences: list[Residence]) -> dict[str, Firmware]:
         """Get firmware."""
-        models = []
+        devices: dict[str, FirmwareAppID] = {}
         for residence in residences:
             for device in residence.devices:
-                if device.update_ready and device.model not in models:
-                    models.append(device.model)
-        firmware = []
-        for model in models:
-            model_firmware = self.call(
-                method="get",
+                if device.model and device.model not in devices:
+                    devices[device.model] = FIRMWARE_APP_MAP[device.generation]
+
+        firmware: dict[str, Firmware] = {}
+        for model, app_id in devices.items():
+            app_firmware = self.call(
+                method=HTTPMethod.GET,
                 url="lcsapps/getfirmware",
                 params={
-                    "appId": "DECORA_SMART_2",
+                    "appId": app_id,
                     "model": model,
                     "data": json.dumps(
                         {
@@ -322,6 +391,6 @@ class LevitonAPI:
                     ).encode("ascii"),
                 },
             )
-            if model_firmware and isinstance(model_firmware, list):
-                firmware.append(Firmware(model_firmware[0]))
+            if app_firmware and isinstance(app_firmware, list):
+                firmware[model] = Firmware(app_firmware[0])
         return firmware
