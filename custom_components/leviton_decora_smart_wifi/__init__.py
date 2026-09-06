@@ -16,6 +16,7 @@ from homeassistant.const import (
     Platform,
 )
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.dispatcher import async_dispatcher_send
@@ -198,7 +199,20 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
         update_interval=timedelta(minutes=conf_scan_interval),
         update_method=async_update_data,
     )
-    await coordinator.async_refresh()
+    # Must be async_config_entry_first_refresh, never async_refresh: the latter
+    # swallows every fetch error (it only sets last_update_success=False and
+    # leaves .data as None), so a transient failure here -- a DNS blip while the
+    # network is still coming up at boot is the common one -- used to fall
+    # straight through to coordinator.data.residences and die with
+    # "AttributeError: NoneType has no attribute residences". That is an
+    # unhandled exception, so HA marked the entry SETUP_ERROR and never retried;
+    # the integration stayed dead until someone restarted HA by hand.
+    # async_config_entry_first_refresh raises ConfigEntryNotReady instead, which
+    # is what puts the entry into HA's automatic exponential-backoff retry.
+    await coordinator.async_config_entry_first_refresh()
+
+    if coordinator.data is None:
+        raise ConfigEntryNotReady("Leviton returned no data on first refresh")
 
     for residence in coordinator.data.residences:
         if residence.id and residence.id in conf_residences:

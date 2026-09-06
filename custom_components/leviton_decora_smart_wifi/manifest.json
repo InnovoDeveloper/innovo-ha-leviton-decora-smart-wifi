@@ -2,15 +2,22 @@
   "domain": "leviton_decora_smart_wifi",
   "name": "Leviton Decora Smart Wi-Fi",
   "after_dependencies": [],
-  "codeowners": ["@schmittx"],
+  "codeowners": [
+    "@InnovoDeveloper"
+  ],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://github.com/schmittx/home-assistant-leviton-decora-smart-wifi",
+  "documentation": "https://github.com/InnovoDeveloper/innovo-ha-leviton-decora-smart-wifi",
   "integration_type": "hub",
   "iot_class": "cloud_push",
-  "issue_tracker": "https://github.com/schmittx/home-assistant-leviton-decora-smart-wifi/issues",
-  "loggers": ["custom_components.leviton_decora_smart_wifi"],
+  "issue_tracker": "https://github.com/InnovoDeveloper/innovo-ha-leviton-decora-smart-wifi/issues",
+  "loggers": [
+    "custom_components.leviton_decora_smart_wifi"
+  ],
   "quality_scale": "gold",
-  "requirements": ["pypng==0.20220715.0", "PyQRCode==1.2.1"],
-  "version": "2.1.3"
+  "requirements": [
+    "pypng==0.20220715.0",
+    "PyQRCode==1.2.1"
+  ],
+  "version": "2026.9.1"
 }
