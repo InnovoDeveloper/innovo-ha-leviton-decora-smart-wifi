@@ -44,6 +44,7 @@ from .const import (
     DEFAULT_SWITCHES_AS_LIGHTS,
     DOMAIN,
     ScanInterval,
+    SwitchesAsLights,
     Timeout,
 )
 
@@ -274,7 +275,13 @@ class LevitonConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     ): BooleanSelector(),
                     vol.Optional(
                         CONF_SWITCHES_AS_LIGHTS, default=DEFAULT_SWITCHES_AS_LIGHTS
-                    ): BooleanSelector(),
+                    ): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[mode.value for mode in SwitchesAsLights],
+                            translation_key=CONF_SWITCHES_AS_LIGHTS,
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
                     vol.Optional(
                         CONF_SCAN_INTERVAL, default=ScanInterval.DEFAULT
                     ): NumberSelector(
@@ -459,7 +466,13 @@ class LevitonOptionsFlowHandler(config_entries.OptionsFlow):
                     ): BooleanSelector(),
                     vol.Optional(
                         CONF_SWITCHES_AS_LIGHTS, default=conf_switches_as_lights
-                    ): BooleanSelector(),
+                    ): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[mode.value for mode in SwitchesAsLights],
+                            translation_key=CONF_SWITCHES_AS_LIGHTS,
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
                     vol.Optional(
                         CONF_SCAN_INTERVAL, default=conf_scan_interval
                     ): NumberSelector(
