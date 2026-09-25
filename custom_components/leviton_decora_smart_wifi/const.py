@@ -5,6 +5,7 @@ from enum import IntEnum
 CONF_DEVICES: str = "devices"
 CONF_RESIDENCES: str = "residences"
 CONF_SAVE_RESPONSES: str = "save_responses"
+CONF_SWITCHES_AS_LIGHTS: str = "switches_as_lights"
 CONF_TIMEOUT: str = "timeout"
 
 CONFIGURATION_URL: str = "https://my.leviton.com/home"
@@ -25,6 +26,7 @@ UNDO_UPDATE_LISTENER: str = "undo_update_listener"
 
 DEFAULT_SAVE_LOCATION: str = f"/config/custom_components/{DOMAIN}/api/responses"
 DEFAULT_SAVE_RESPONSES: bool = False
+DEFAULT_SWITCHES_AS_LIGHTS: bool = False
 
 DEVICE_INFO_MANUFACTURER: str = "Leviton Manufacturing Co., Inc."
 DEVICE_INFO_MODEL_RESIDENCE: str = "Residence"

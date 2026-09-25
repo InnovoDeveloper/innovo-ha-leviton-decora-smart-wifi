@@ -13,7 +13,13 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import CONF_DEVICES, CONF_RESIDENCES, DATA_COORDINATOR, DOMAIN
+from .const import (
+    CONF_DEVICES,
+    CONF_RESIDENCES,
+    CONF_SWITCHES_AS_LIGHTS,
+    DATA_COORDINATOR,
+    DOMAIN,
+)
 from .entity import LevitonEntity
 
 
@@ -32,6 +38,14 @@ async def async_setup_entry(
     conf_residences = entry[CONF_RESIDENCES]
     conf_devices = entry[CONF_DEVICES]
     coordinator = entry[DATA_COORDINATOR]
+    # Legacy compatibility: Home Assistant's core ``decora_wifi`` integration
+    # modelled every iotswitch as a light entity, so installs migrating from it
+    # have automations and third-party drivers (eLan, Control4) bound to
+    # ``light.*`` entity_ids even for non-dimming switches. When enabled, expose
+    # switch-type devices as lights too so those entity_ids survive the move.
+    # LevitonLightEntity already degrades to ColorMode.ONOFF when the device
+    # reports canSetLevel false, so a switch behaves correctly as a light.
+    conf_switches_as_lights = entry[CONF_SWITCHES_AS_LIGHTS]
     entities: list[LevitonLightEntity] = []
 
     for residence in coordinator.data.residences:
@@ -50,7 +64,8 @@ async def async_setup_entry(
                 if all(
                     [
                         device.id in conf_devices,
-                        device.is_light,
+                        device.is_light
+                        or (conf_switches_as_lights and device.is_switch),
                     ]
                 )
             )

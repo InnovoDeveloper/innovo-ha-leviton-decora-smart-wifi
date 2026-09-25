@@ -30,6 +30,7 @@ from .const import (
     CONF_LOGIN_RESPONSE,
     CONF_RESIDENCES,
     CONF_SAVE_RESPONSES,
+    CONF_SWITCHES_AS_LIGHTS,
     CONF_TIMEOUT,
     CONFIGURATION_URL,
     DATA_API,
@@ -38,6 +39,7 @@ from .const import (
     DATA_WEBSOCKET,
     DEFAULT_SAVE_LOCATION,
     DEFAULT_SAVE_RESPONSES,
+    DEFAULT_SWITCHES_AS_LIGHTS,
     DEVICE_INFO_MANUFACTURER,
     DEVICE_INFO_MODEL_RESIDENCE,
     DOMAIN,
@@ -151,6 +153,10 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
         CONF_SCAN_INTERVAL, data.get(CONF_SCAN_INTERVAL, ScanInterval.DEFAULT)
     )
     conf_timeout = options.get(CONF_TIMEOUT, data.get(CONF_TIMEOUT, Timeout.DEFAULT))
+    conf_switches_as_lights = options.get(
+        CONF_SWITCHES_AS_LIGHTS,
+        data.get(CONF_SWITCHES_AS_LIGHTS, DEFAULT_SWITCHES_AS_LIGHTS),
+    )
 
     conf_save_location = DEFAULT_SAVE_LOCATION if conf_save_responses else None
 
@@ -230,6 +236,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
     hass.data[DOMAIN][config_entry.entry_id] = {
         CONF_RESIDENCES: conf_residences,
         CONF_DEVICES: conf_devices,
+        CONF_SWITCHES_AS_LIGHTS: conf_switches_as_lights,
         DATA_API: api,
         DATA_COORDINATOR: coordinator,
         DATA_OPTIONS_SNAPSHOT: dict(config_entry.options),
