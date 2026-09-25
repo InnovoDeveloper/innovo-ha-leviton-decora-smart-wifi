@@ -45,10 +45,10 @@
                 "data": {
                     "save_responses": "Save server responses to custom_components/leviton_decora_smart_wifi/api/responses",
                     "scan_interval": "Polling interval",
-                    "switches_as_lights": "Expose switches as lights (compatibility with the core decora_wifi integration)",
+                    "switches_as_lights": "Expose switches as lights",
                     "timeout": "Polling timeout"
                 },
-                "description": "Server responses can be saved to a file for debugging and development support.\n\nPolling interval and timeout can be adjusted if errors are encountered.\n\nEnable \"Expose switches as lights\" only when migrating from Home Assistant's built-in decora_wifi integration: it modelled every device as a light, so non-dimming switches keep their existing light.* entity IDs instead of becoming switch.* entities.",
+                "description": "Server responses can be saved to a file for debugging and development support.\n\nPolling interval and timeout can be adjusted if errors are encountered.\n\nSet \"Expose switches as lights\" when migrating from Home Assistant's built-in decora_wifi integration: it modelled every device as a light, so non-dimming switches keep their existing light.* entity IDs instead of becoming switch.* entities.",
                 "title": "Advanced options"
             }
         }
@@ -73,11 +73,20 @@
                 "data": {
                     "save_responses": "Save server responses to custom_components/leviton_decora_smart_wifi/api/responses",
                     "scan_interval": "Polling interval",
-                    "switches_as_lights": "Expose switches as lights (compatibility with the core decora_wifi integration)",
+                    "switches_as_lights": "Expose switches as lights",
                     "timeout": "Polling timeout"
                 },
-                "description": "Server responses can be saved to a file for debugging and development support.\n\nPolling interval and timeout can be adjusted if errors are encountered.\n\nEnable \"Expose switches as lights\" only when migrating from Home Assistant's built-in decora_wifi integration: it modelled every device as a light, so non-dimming switches keep their existing light.* entity IDs instead of becoming switch.* entities.",
+                "description": "Server responses can be saved to a file for debugging and development support.\n\nPolling interval and timeout can be adjusted if errors are encountered.\n\nSet \"Expose switches as lights\" when migrating from Home Assistant's built-in decora_wifi integration: it modelled every device as a light, so non-dimming switches keep their existing light.* entity IDs instead of becoming switch.* entities.",
                 "title": "Advanced options"
+            }
+        }
+    },
+    "selector": {
+        "switches_as_lights": {
+            "options": {
+                "off": "Off - switches appear as switch entities",
+                "named": "Only switches whose name mentions \"light\"",
+                "all": "All switches appear as light entities"
             }
         }
     },
