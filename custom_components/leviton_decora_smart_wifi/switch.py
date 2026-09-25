@@ -14,7 +14,13 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import CONF_DEVICES, CONF_RESIDENCES, DATA_COORDINATOR, DOMAIN
+from .const import (
+    CONF_DEVICES,
+    CONF_RESIDENCES,
+    CONF_SWITCHES_AS_LIGHTS,
+    DATA_COORDINATOR,
+    DOMAIN,
+)
 from .entity import LevitonEntity
 
 
@@ -87,6 +93,11 @@ async def async_setup_entry(
     conf_residences = entry[CONF_RESIDENCES]
     conf_devices = entry[CONF_DEVICES]
     coordinator = entry[DATA_COORDINATOR]
+    # When switch-type devices are exposed as lights for legacy entity_id
+    # compatibility, skip the primary on/off switch entity so the device is not
+    # controllable from two entities at once. The per-device configuration
+    # switches (randomization, status LED, ...) are unaffected.
+    conf_switches_as_lights = entry[CONF_SWITCHES_AS_LIGHTS]
     entities: list[LevitonSwitchEntity] = []
 
     for residence in coordinator.data.residences:
@@ -118,7 +129,8 @@ async def async_setup_entry(
                     if any(
                         [
                             device.is_outlet,
-                            device.is_switch,
+                            device.is_switch
+                            and not conf_switches_as_lights,
                         ]
                     ):
                         entities.append(
