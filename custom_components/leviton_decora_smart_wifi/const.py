@@ -26,7 +26,6 @@ UNDO_UPDATE_LISTENER: str = "undo_update_listener"
 
 DEFAULT_SAVE_LOCATION: str = f"/config/custom_components/{DOMAIN}/api/responses"
 DEFAULT_SAVE_RESPONSES: bool = False
-DEFAULT_SWITCHES_AS_LIGHTS: str = SwitchesAsLights.OFF
 
 DEVICE_INFO_MANUFACTURER: str = "Leviton Manufacturing Co., Inc."
 DEVICE_INFO_MODEL_RESIDENCE: str = "Residence"
@@ -66,6 +65,8 @@ class SwitchesAsLights(StrEnum):
 # it is necessarily leaky (a "Front Pendants" switch will not match), so
 # SwitchesAsLights.ALL exists for installs that need every switch as a light.
 LIGHT_NAME_HINTS: tuple[str, ...] = ("light",)
+
+DEFAULT_SWITCHES_AS_LIGHTS: str = SwitchesAsLights.OFF
 
 
 class Timeout(IntEnum):
