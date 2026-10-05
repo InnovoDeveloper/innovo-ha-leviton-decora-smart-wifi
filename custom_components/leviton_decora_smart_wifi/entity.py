@@ -175,7 +175,7 @@ class LevitonEntity(CoordinatorEntity[LevitonDataUpdateCoordinator]):
         """
         if self.residence and self.residence.id:
             if self.device and self.device.id:
-                return dr.DeviceInfo(
+                info = dr.DeviceInfo(
                     configuration_url=CONFIGURATION_URL,
                     identifiers={generate_device_identifier(self.device.id)},
                     manufacturer=self.device.manufacturer,
@@ -184,8 +184,9 @@ class LevitonEntity(CoordinatorEntity[LevitonDataUpdateCoordinator]):
                     serial_number=self.device.serial,
                     suggested_area=self.device.room_name,
                     sw_version=self.device.version,
-                    via_device=generate_device_identifier(self.residence.id),
                 )
+                info.update(self._via_residence())
+                return info
             return dr.DeviceInfo(
                 configuration_url=CONFIGURATION_URL,
                 entry_type=dr.DeviceEntryType.SERVICE,
@@ -195,6 +196,28 @@ class LevitonEntity(CoordinatorEntity[LevitonDataUpdateCoordinator]):
                 name=self.residence.name,
             )
         return None
+
+    def _via_residence(self) -> dict[str, Any]:
+        """Link a device to its residence device.
+
+        Home Assistant 2026.8 deprecated ``via_device`` (an identifier) in
+        favour of ``via_device_id`` and added the lookup helper; this fork
+        still supports 2026.6, so use the helper only where it exists.
+        """
+        identifier = generate_device_identifier(self.residence.id)
+        lookup = getattr(dr, "async_get_device_id_by_identifier", None)
+        if lookup is not None and self.hass is not None:
+            try:
+                return {
+                    "via_device_id": lookup(
+                        self.hass,
+                        identifier,
+                        config_entry_id=self.coordinator.config_entry.entry_id,
+                    )
+                }
+            except ValueError:
+                pass  # residence device not registered yet; use the old form
+        return {"via_device": identifier}
 
     @property
     def name(self) -> str | None:
