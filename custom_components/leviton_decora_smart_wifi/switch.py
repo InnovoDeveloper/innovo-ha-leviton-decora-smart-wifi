@@ -173,6 +173,11 @@ class LevitonSwitchEntity(SwitchEntity, LevitonEntity):
     entity_description: LevitonSwitchEntityDescription
 
     @property
+    def entity_registry_enabled_default(self) -> bool:
+        """Enable only the switch that controls the load, not its settings."""
+        return self.entity_description.key == "switch"
+
+    @property
     def device_class(self) -> SwitchDeviceClass | str | None:
         """Return the class of this device, from component DEVICE_CLASSES."""
         if self.device is not None:
