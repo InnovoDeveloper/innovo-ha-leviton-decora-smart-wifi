@@ -47,6 +47,27 @@ POST_REFRESH_DELAY = 5.0
 
 CHALLENGE_TIMEOUT = 10.0
 
+# Subscription watchdog.
+#
+# The failure this guards against is a socket that stays open and keeps
+# answering pings while the server has quietly forgotten our subscriptions:
+# aiohttp's heartbeat cannot see it, so without this the integration goes
+# permanently deaf while looking healthy.
+#
+# Note this is deliberately NOT ldata-ha's "no data for 60s -> resubscribe".
+# That works for an energy monitor, which streams continuously, but a Decora
+# account is legitimately silent for hours -- the cloud only pushes on change
+# -- so silence is not evidence of anything and must never by itself force a
+# reconnect. Instead the (idempotent) subscribe frames are simply re-sent on a
+# slow timer, which costs one small frame per device and repairs dropped
+# subscriptions whether or not anything was wrong.
+RESUBSCRIBE_INTERVAL = 900.0
+
+# Only after this many consecutive silent re-subscribes is the socket assumed
+# wedged and torn down for a fresh connect. At the default interval that is a
+# little over an hour of total silence. Any inbound notification resets it.
+MAX_SILENT_RESUBSCRIBES = 4
+
 
 class LevitonWebSocket:
     """Persistent WebSocket subscriber for the MyLeviton cloud."""
@@ -255,10 +276,54 @@ class LevitonWebSocket:
             await self._ws.send_json(msg)
 
     async def _receive_loop(self, ws: aiohttp.ClientWebSocketResponse) -> None:
-        async for msg in ws:
+        """Pump inbound frames, re-subscribing if the socket goes quiet.
+
+        Returning hands control back to ``_run``, which reconnects.
+        """
+        loop = asyncio.get_running_loop()
+        last_traffic = loop.time()
+        silent_resubscribes = 0
+
+        while not self._stop.is_set():
+            remaining = RESUBSCRIBE_INTERVAL - (loop.time() - last_traffic)
+
+            if remaining <= 0:
+                if silent_resubscribes >= MAX_SILENT_RESUBSCRIBES:
+                    _LOGGER.debug(
+                        "WebSocket silent after %d re-subscribes, reconnecting",
+                        silent_resubscribes,
+                    )
+                    return
+                silent_resubscribes += 1
+                _LOGGER.debug(
+                    "WebSocket quiet for %.0fs, re-subscribing (#%d)",
+                    RESUBSCRIBE_INTERVAL,
+                    silent_resubscribes,
+                )
+                try:
+                    await self._send_subscriptions()
+                except (aiohttp.ClientError, ConnectionResetError) as err:
+                    _LOGGER.debug("WebSocket re-subscribe failed: %s", err)
+                    return
+                # Restart the window whether or not the server answers, so a
+                # silent socket re-subscribes at a fixed slow cadence rather
+                # than spinning.
+                last_traffic = loop.time()
+                continue
+
+            try:
+                msg = await ws.receive(timeout=remaining)
+            except (TimeoutError, asyncio.TimeoutError):
+                # Window elapsed with no frame; next iteration re-subscribes.
+                continue
+
             if self._stop.is_set():
                 break
+
             if msg.type is aiohttp.WSMsgType.TEXT:
+                # Real payload: the subscriptions are demonstrably alive.
+                last_traffic = loop.time()
+                silent_resubscribes = 0
                 self._dispatch(msg.data)
             elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING):
                 _LOGGER.debug("WebSocket closed/closing")
@@ -266,6 +331,9 @@ class LevitonWebSocket:
             elif msg.type is aiohttp.WSMsgType.ERROR:
                 _LOGGER.warning("WebSocket error: %s", ws.exception())
                 break
+            # PING/PONG/BINARY prove only that the transport is up, not that
+            # the subscriptions are, so they deliberately do not reset the
+            # watchdog.
 
     def _dispatch(self, raw: str) -> None:
         try:
