@@ -5,6 +5,8 @@ from http import HTTPMethod
 import json
 import logging
 from pathlib import Path
+import threading
+import time
 from typing import Any
 
 import requests
@@ -15,6 +17,20 @@ from .residence import Residence
 from .throttle import LoginThrottle
 
 _LOGGER = logging.getLogger(__name__)
+
+# (connect, read) seconds applied to every request. Without a timeout a hung
+# connection stalls the whole update cycle until the coordinator gives up.
+REQUEST_TIMEOUT = (5, 10)
+
+# Failures where the request never reached Leviton or got no answer. These are
+# worth retrying; anything Leviton actually answered is not.
+TRANSIENT_ERRORS = (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
+
+# How long a device command that failed on a transient network error keeps
+# being retried. A schedule's "off" delivered a few minutes late is far better
+# than one silently dropped (a 23:00 DNS outage once left a light on all
+# night), but a command older than this is no longer what anyone wants.
+PENDING_COMMAND_MAX_AGE = 600.0
 
 
 class LevitonData:
@@ -89,6 +105,16 @@ class LevitonAPI:
         self.user_name: str | None = None
         self.login_response: dict[str, Any] | None = None
         self._login_in_progress: bool = False
+        # url -> (method, request kwargs, monotonic time first queued). One
+        # entry per device URL, so a newer command replaces an older one.
+        self._pending_commands: dict[str, tuple[HTTPMethod, dict, float]] = {}
+        self._pending_lock = threading.Lock()
+
+    @property
+    def has_pending_commands(self) -> bool:
+        """Return True while device commands are waiting to be retried."""
+        with self._pending_lock:
+            return bool(self._pending_commands)
 
     def call(
         self,
@@ -96,10 +122,24 @@ class LevitonAPI:
         url: str,
         headers: dict | None = None,
         authenticated: bool = True,
+        queue_on_failure: bool = True,
         **kwargs,
     ) -> list[dict] | dict[str, Any] | None:
-        """Call."""
+        """Call.
+
+        A device command (PUT to an iotswitch) that fails because Leviton
+        could not be reached is queued and retried by
+        ``flush_pending_commands`` instead of raising, so a short network
+        outage delays the command rather than losing it.
+        """
         base_headers = dict(headers) if headers else {}
+        kwargs.setdefault("timeout", REQUEST_TIMEOUT)
+        queueable = (
+            queue_on_failure
+            and method == HTTPMethod.PUT
+            and url.startswith("residences/")
+            and "/iotswitches/" in url
+        )
 
         def request() -> requests.Response:
             # The authorization header is built per attempt on purpose.
@@ -117,10 +157,83 @@ class LevitonAPI:
             )
 
         _LOGGER.debug("Calling API with method: %s and URL: %s", method, url)
-        response = self.refresh(request)
+        try:
+            response = self.refresh(request)
+        except TRANSIENT_ERRORS as err:
+            if not queueable:
+                raise
+            self._queue_command(method, url, kwargs, err)
+            return None
+        if queueable:
+            # This command reached Leviton, so an older queued command for the
+            # same device must not be replayed over it later.
+            self._discard_pending(url)
         response = self.parse_response(response=response)
         self.save_response(response=response, name=url)
         return response
+
+    def _queue_command(
+        self, method: HTTPMethod, url: str, kwargs: dict, err: Exception
+    ) -> None:
+        """Hold a device command that could not reach Leviton for retry."""
+        with self._pending_lock:
+            previous = self._pending_commands.get(url)
+            # Keep the original queue time so a device that is re-commanded
+            # during a long outage still ages out on schedule.
+            queued_at = previous[2] if previous else time.monotonic()
+            self._pending_commands[url] = (method, dict(kwargs), queued_at)
+        _LOGGER.warning(
+            "Leviton could not be reached (%s); will keep retrying %s %s for up to %.0f minutes",
+            err.__class__.__name__,
+            method,
+            url,
+            PENDING_COMMAND_MAX_AGE / 60,
+        )
+
+    def _discard_pending(
+        self, url: str, only: tuple[HTTPMethod, dict, float] | None = None
+    ) -> None:
+        """Forget a queued command, optionally only if it is still ``only``."""
+        with self._pending_lock:
+            if url in self._pending_commands and (
+                only is None or self._pending_commands[url] is only
+            ):
+                del self._pending_commands[url]
+
+    def flush_pending_commands(self) -> int:
+        """Retry queued device commands. Returns how many were delivered."""
+        with self._pending_lock:
+            pending = list(self._pending_commands.items())
+        delivered = 0
+        for url, command in pending:
+            method, kwargs, queued_at = command
+            age = time.monotonic() - queued_at
+            if age > PENDING_COMMAND_MAX_AGE:
+                self._discard_pending(url, command)
+                _LOGGER.error(
+                    "Gave up on Leviton command %s %s: no connection for %.0f minutes",
+                    method,
+                    url,
+                    age / 60,
+                )
+                continue
+            try:
+                self.call(method=method, url=url, queue_on_failure=False, **kwargs)
+            except TRANSIENT_ERRORS:
+                continue  # still unreachable; the next flush tries again
+            except Exception:  # noqa: BLE001 - Leviton answered; retrying cannot help
+                self._discard_pending(url, command)
+                _LOGGER.exception("Leviton rejected queued command %s %s", method, url)
+                continue
+            self._discard_pending(url, command)
+            delivered += 1
+            _LOGGER.warning(
+                "Delivered Leviton command %s %s %.0fs late after a connection failure",
+                method,
+                url,
+                age,
+            )
+        return delivered
 
     def login(self, email: str, password: str, code: str | None = None) -> LoginResult:
         """Login."""
@@ -180,15 +293,29 @@ class LevitonAPI:
         self.credentials = data
         return LoginResult.SUCCESS
 
+    @staticmethod
+    def decode_body(response: requests.Response) -> Any:
+        """Decode a JSON body, returning None when the body is not JSON.
+
+        Leviton intermittently answers with an HTML error page or an empty
+        body; json.loads on that raises and used to abort the whole update.
+        """
+        try:
+            return json.loads(response.text)
+        except ValueError:
+            return None
+
     def parse_response(self, response: requests.Response) -> dict[str, Any] | None:
         """Parse the response."""
-        text = json.loads(response.text)
-        if response.status_code != 200:
-            error = text["error"]
+        text = self.decode_body(response)
+        if response.status_code != 200 or text is None:
+            error = text.get("error", {}) if isinstance(text, dict) else {}
             raise LevitonException(
-                status_code=error.get("statusCode"),
-                name=error.get("name"),
-                message=error.get("message"),
+                status_code=error.get("statusCode", response.status_code),
+                name=error.get("name", "InvalidResponse"),
+                message=error.get(
+                    "message", f"Non-JSON response: {response.text[:200]!r}"
+                ),
             )
         return text
 
@@ -200,15 +327,23 @@ class LevitonAPI:
         ``ConnectionError``/``RemoteDisconnected`` and HA marks every
         coordinator-bound entity unavailable until the next cycle. Retry
         once after rotating the requests.Session so the client gets a
-        fresh socket.
+        fresh socket. Timeouts get the same single retry, and an error
+        answer that is not JSON (a transient cloud fault) is retried once.
         """
         try:
             response = function()
-        except requests.exceptions.ConnectionError:
+        except TRANSIENT_ERRORS as err:
             _LOGGER.debug(
-                "Leviton REST connection dropped; retrying with fresh session"
+                "Leviton REST request failed (%s); retrying with fresh session",
+                err.__class__.__name__,
             )
             self.session = requests.Session()
+            response = function()
+        if response.status_code != 200 and self.decode_body(response) is None:
+            _LOGGER.warning(
+                "Leviton returned a non-JSON answer (status %s); retrying once",
+                response.status_code,
+            )
             response = function()
         if response.status_code == 401 and self.refresh_authorization():
             response = function()
