@@ -37,11 +37,14 @@ from .const import (
     CONF_LOGIN_RESPONSE,
     CONF_RESIDENCES,
     CONF_SAVE_RESPONSES,
+    CONF_SWITCHES_AS_LIGHTS,
     CONF_TIMEOUT,
     DATA_API,
     DEFAULT_SAVE_RESPONSES,
+    DEFAULT_SWITCHES_AS_LIGHTS,
     DOMAIN,
     ScanInterval,
+    SwitchesAsLights,
     Timeout,
 )
 
@@ -255,6 +258,9 @@ class LevitonConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             self.user_input[CONF_SAVE_RESPONSES] = user_input[CONF_SAVE_RESPONSES]
             self.user_input[CONF_SCAN_INTERVAL] = user_input[CONF_SCAN_INTERVAL]
+            self.user_input[CONF_SWITCHES_AS_LIGHTS] = user_input[
+                CONF_SWITCHES_AS_LIGHTS
+            ]
             self.user_input[CONF_TIMEOUT] = user_input[CONF_TIMEOUT]
             return self.async_create_entry(
                 title=self.config_title, data=self.user_input
@@ -267,6 +273,15 @@ class LevitonConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Optional(
                         CONF_SAVE_RESPONSES, default=DEFAULT_SAVE_RESPONSES
                     ): BooleanSelector(),
+                    vol.Optional(
+                        CONF_SWITCHES_AS_LIGHTS, default=DEFAULT_SWITCHES_AS_LIGHTS
+                    ): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[mode.value for mode in SwitchesAsLights],
+                            translation_key=CONF_SWITCHES_AS_LIGHTS,
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
                     vol.Optional(
                         CONF_SCAN_INTERVAL, default=ScanInterval.DEFAULT
                     ): NumberSelector(
@@ -421,12 +436,19 @@ class LevitonOptionsFlowHandler(config_entries.OptionsFlow):
         if user_input is not None:
             self.user_input[CONF_SAVE_RESPONSES] = user_input[CONF_SAVE_RESPONSES]
             self.user_input[CONF_SCAN_INTERVAL] = user_input[CONF_SCAN_INTERVAL]
+            self.user_input[CONF_SWITCHES_AS_LIGHTS] = user_input[
+                CONF_SWITCHES_AS_LIGHTS
+            ]
             self.user_input[CONF_TIMEOUT] = user_input[CONF_TIMEOUT]
             return self.async_create_entry(title="", data=self.user_input)
 
         conf_save_responses = self.options.get(
             CONF_SAVE_RESPONSES,
             self.data.get(CONF_SAVE_RESPONSES, DEFAULT_SAVE_RESPONSES),
+        )
+        conf_switches_as_lights = self.options.get(
+            CONF_SWITCHES_AS_LIGHTS,
+            self.data.get(CONF_SWITCHES_AS_LIGHTS, DEFAULT_SWITCHES_AS_LIGHTS),
         )
         conf_scan_interval = self.options.get(
             CONF_SCAN_INTERVAL, self.data.get(CONF_SCAN_INTERVAL, ScanInterval.DEFAULT)
@@ -442,6 +464,15 @@ class LevitonOptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Optional(
                         CONF_SAVE_RESPONSES, default=conf_save_responses
                     ): BooleanSelector(),
+                    vol.Optional(
+                        CONF_SWITCHES_AS_LIGHTS, default=conf_switches_as_lights
+                    ): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[mode.value for mode in SwitchesAsLights],
+                            translation_key=CONF_SWITCHES_AS_LIGHTS,
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
                     vol.Optional(
                         CONF_SCAN_INTERVAL, default=conf_scan_interval
                     ): NumberSelector(

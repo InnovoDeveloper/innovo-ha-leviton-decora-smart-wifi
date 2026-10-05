@@ -1,8 +1,11 @@
 """The Leviton Decora Smart Wi-Fi integration."""
 
+import asyncio
 from asyncio import timeout
-from datetime import timedelta
+from datetime import datetime, timedelta
 import logging
+
+import requests
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
@@ -20,6 +23,7 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import LevitonAPI, LevitonData, LevitonException
@@ -30,6 +34,7 @@ from .const import (
     CONF_LOGIN_RESPONSE,
     CONF_RESIDENCES,
     CONF_SAVE_RESPONSES,
+    CONF_SWITCHES_AS_LIGHTS,
     CONF_TIMEOUT,
     CONFIGURATION_URL,
     DATA_API,
@@ -38,10 +43,12 @@ from .const import (
     DATA_WEBSOCKET,
     DEFAULT_SAVE_LOCATION,
     DEFAULT_SAVE_RESPONSES,
+    DEFAULT_SWITCHES_AS_LIGHTS,
     DEVICE_INFO_MANUFACTURER,
     DEVICE_INFO_MODEL_RESIDENCE,
     DOMAIN,
     EVENT_NOTIFICATION,
+    PUSH_STATUS_SIGNAL,
     UNDO_UPDATE_LISTENER,
     UPDATE_NOTIFICATION,
     ScanInterval,
@@ -65,6 +72,14 @@ PLATFORMS = (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Consecutive failed polls tolerated before entities are marked unavailable.
+# Home Assistant blanks every entity as soon as one update fails, so without
+# this a single transient cloud fault costs a full scan interval of downtime.
+MAX_TOLERATED_UPDATE_FAILURES = 2
+
+# How often device commands that failed on a network error are retried.
+PENDING_COMMAND_RETRY_INTERVAL = timedelta(seconds=15)
 
 
 class LevitonDataUpdateCoordinator(DataUpdateCoordinator[LevitonData]):
@@ -151,6 +166,10 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
         CONF_SCAN_INTERVAL, data.get(CONF_SCAN_INTERVAL, ScanInterval.DEFAULT)
     )
     conf_timeout = options.get(CONF_TIMEOUT, data.get(CONF_TIMEOUT, Timeout.DEFAULT))
+    conf_switches_as_lights = options.get(
+        CONF_SWITCHES_AS_LIGHTS,
+        data.get(CONF_SWITCHES_AS_LIGHTS, DEFAULT_SWITCHES_AS_LIGHTS),
+    )
 
     conf_save_location = DEFAULT_SAVE_LOCATION if conf_save_responses else None
 
@@ -177,19 +196,49 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
         on_token_refreshed=persist_refreshed_token,
     )
 
+    consecutive_failures = 0
+
     async def async_update_data() -> LevitonData:
         """Fetch data from API endpoint.
 
         This is the place to pre-process the data to lookup tables
         so entities can quickly look up their data.
         """
+        nonlocal consecutive_failures
         try:
             async with timeout(conf_timeout):
-                return await hass.async_add_executor_job(api.update, conf_residences)
-        except LevitonException as exception:
+                result = await hass.async_add_executor_job(
+                    api.update, conf_residences
+                )
+        except (
+            LevitonException,
+            TimeoutError,
+            requests.exceptions.RequestException,
+            ValueError,
+        ) as exception:
+            consecutive_failures += 1
+            # Serve the last known data for a few cycles so one transient
+            # cloud fault does not take every entity unavailable.
+            if (
+                consecutive_failures <= MAX_TOLERATED_UPDATE_FAILURES
+                and coordinator.data is not None
+            ):
+                _LOGGER.warning(
+                    "Leviton update failed (%s of %s tolerated), keeping last known state: %r",
+                    consecutive_failures,
+                    MAX_TOLERATED_UPDATE_FAILURES,
+                    exception,
+                )
+                return coordinator.data
+            if isinstance(exception, LevitonException):
+                raise UpdateFailed(
+                    f"Error communicating with API, Status: {exception.status_code}, Error Name: {exception.name}, Error Message: {exception.message}"
+                ) from exception
             raise UpdateFailed(
-                f"Error communicating with API, Status: {exception.status_code}, Error Name: {exception.name}, Error Message: {exception.message}"
+                f"Error communicating with API: {exception!r}"
             ) from exception
+        consecutive_failures = 0
+        return result
 
     coordinator = LevitonDataUpdateCoordinator(
         hass=hass,
@@ -230,6 +279,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
     hass.data[DOMAIN][config_entry.entry_id] = {
         CONF_RESIDENCES: conf_residences,
         CONF_DEVICES: conf_devices,
+        CONF_SWITCHES_AS_LIGHTS: conf_switches_as_lights,
         DATA_API: api,
         DATA_COORDINATOR: coordinator,
         DATA_OPTIONS_SNAPSHOT: dict(config_entry.options),
@@ -246,6 +296,26 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
     )
     if websocket is not None:
         hass.data[DOMAIN][config_entry.entry_id][DATA_WEBSOCKET] = websocket
+
+    flush_lock = asyncio.Lock()
+
+    async def async_flush_pending_commands(_now: datetime | None = None) -> None:
+        """Retry device commands that failed while Leviton was unreachable."""
+        if flush_lock.locked() or not api.has_pending_commands:
+            return
+        async with flush_lock:
+            delivered = await hass.async_add_executor_job(api.flush_pending_commands)
+        if delivered:
+            await coordinator.async_request_refresh()
+
+    config_entry.async_on_unload(
+        async_track_time_interval(
+            hass,
+            async_flush_pending_commands,
+            PENDING_COMMAND_RETRY_INTERVAL,
+            name="Leviton pending command retry",
+        )
+    )
 
     await hass.config_entries.async_forward_entry_setups(config_entry, PLATFORMS)
 
@@ -355,11 +425,26 @@ async def _async_start_websocket(
         """Renew the bearer token for the WebSocket, subject to throttling."""
         return await hass.async_add_executor_job(api.refresh_authorization)
 
+    @callback
+    def on_connection_change(connected: bool, reconnect: bool) -> None:
+        # Pushes sent while the socket was down are gone for good, so after a
+        # reconnect fetch the current state at once instead of waiting up to a
+        # full scan interval for the next poll.
+        if connected and reconnect:
+            hass.async_create_task(
+                coordinator.async_request_refresh(),
+                name="Leviton refresh after push reconnect",
+            )
+        async_dispatcher_send(
+            hass, f"{PUSH_STATUS_SIGNAL}_{config_entry.entry_id}", connected
+        )
+
     websocket = LevitonWebSocket(
         session=async_get_clientsession(hass),
         token_provider=token_provider,
         on_notification=on_notification,
         token_refresher=async_refresh_token,
+        on_connection_change=on_connection_change,
     )
     websocket.set_subscriptions(subs)
     websocket.start()
