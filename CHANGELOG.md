@@ -2,6 +2,15 @@
 
 All notable changes in this Innovo fork. Upstream releases by [@schmittx](https://github.com/schmittx/home-assistant-leviton-decora-smart-wifi) are noted where this fork rebases onto them.
 
+## [2026.10.1] - Unreleased (Innovo fork, based on upstream 2.1.3)
+
+### Fixed
+- **The physical paddle could not turn a light off after it was set to the brightness it already had.** Every level change sent `{"power": "ON", "brightness": <level>}`, even when the switch was already holding that level (e.g. 50% → off → 50%). After that request the switch turns the load straight back on whenever the paddle turns it off. A level equal to the stored one now sends power ON only; the switch restores the same level by itself.
+- **Brightness lost 1% on about half of all levels** (e.g. 33%, 66%, 75%) because both conversions between Home Assistant's 0–255 scale and Leviton's 0–100 scale truncated. Both now round, which is exact for every level 1–100, so NICE/ELAN sees the level it set and a repeated level matches the stored one.
+
+### Changed
+- **Only entities that control a load are enabled by default:** lights, fans, and the on/off switch of outlets and switches. A typical 27-switch home used to create ~470 entities, of which only 27 controlled a light, so control systems that import the `light` and `switch` domains (e.g. ELAN) also picked up Smart Bulb Mode, Status LED, Randomization and schedule switches. Everything else (device settings, level presets, LED options, firmware updates, diagnostics, Matter pairing codes, identify/keypad/activity buttons, scenes, schedules, keypad events) is now created disabled and can be enabled from Settings → Entities. This applies when an entity is first registered, so existing installs keep their current entities; devices added later follow the new default.
+
 ## [2026.9.1] - 2026-09-05 (Innovo fork, based on upstream 2.1.3)
 
 Rebased onto upstream `2.1.3`, which now includes the cloud websocket push and
