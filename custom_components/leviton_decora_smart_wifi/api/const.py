@@ -272,6 +272,16 @@ SUPPORTED_DEVICES = [
         DEVICE_GENERATION: DeviceGeneration.TWO,
     },
     {
+        # Matter-capable dimmer. Reports canSetLevel/brightness/minLevel/
+        # maxLevel/presetLevel/fadeOnTime/fadeOffTime exactly like the D26HD,
+        # so it is a LIGHT. Generation TWO matches its D26HD sibling; the
+        # generation only selects the firmware release-notes lookup (install
+        # itself is server-side via apply_ota), so it cannot mis-flash.
+        DEVICE_MODEL: "D36HD",
+        DEVICE_TYPE: [DeviceType.LIGHT],
+        DEVICE_GENERATION: DeviceGeneration.TWO,
+    },
+    {
         DEVICE_MODEL: "MLWSB",
         DEVICE_TYPE: [DeviceType.BRIDGE],
         DEVICE_GENERATION: DeviceGeneration.TWO,
