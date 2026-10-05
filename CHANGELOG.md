@@ -2,7 +2,7 @@
 
 All notable changes in this Innovo fork. Upstream releases by [@schmittx](https://github.com/schmittx/home-assistant-leviton-decora-smart-wifi) are noted where this fork rebases onto them.
 
-## [2026.10.2] - Unreleased (Innovo fork, based on upstream 2.1.3)
+## [2026.10.2] - 2026-10-05 (Innovo fork, based on upstream 2.1.3)
 
 Folds in the unreleased 2026.9.2 and 2026.10.1 work and ports the useful parts of upstream 2.2.0–2.2.2. The minimum Home Assistant version stays 2026.6.0: upstream 2.2.x needs 2026.8 (`via_device_id`) and 2.2.2 needs 2026.9 (`probatio`), which this fork deliberately does not require.
 
