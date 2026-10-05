@@ -22,6 +22,7 @@ from collections.abc import Awaitable, Callable
 import contextlib
 import json
 import logging
+import random
 from typing import Any
 
 import aiohttp
@@ -33,9 +34,19 @@ WS_ORIGIN = "https://my.leviton.com"
 
 PING_INTERVAL = 30.0
 
-# Reconnect when the network blip drops the WS — this is conservative.
-INITIAL_RECONNECT_DELAY = 30.0
-MAX_RECONNECT_DELAY = 600.0
+# Reconnect backoff after the socket drops. Connecting never logs in (auth
+# failures take the separate, throttled path below), so retrying quickly is
+# safe. While the socket is down, paddle changes reach Home Assistant only
+# through the slow poll and keypad presses are lost outright, so the gap is
+# kept short: 5s first, doubling to a 2 minute ceiling, with jitter so many
+# installs do not reconnect in lockstep after a cloud outage.
+INITIAL_RECONNECT_DELAY = 5.0
+MAX_RECONNECT_DELAY = 120.0
+RECONNECT_JITTER = 0.2
+
+# A reconnect after an outage at least this long is logged as a warning, so
+# outages are visible in a default (warning level) log.
+OUTAGE_REPORT_THRESHOLD = 60.0
 
 # Auth failure cooldown — long, so we never hammer Leviton even if the
 # token is bad. The integration's polling layer continues to work.
@@ -78,17 +89,69 @@ class LevitonWebSocket:
         token_provider: Callable[[], dict[str, Any] | None],
         on_notification: Callable[[dict[str, Any]], None],
         token_refresher: Callable[[], Awaitable[bool]] | None = None,
+        on_connection_change: Callable[[bool, bool], None] | None = None,
     ) -> None:
-        """Initialize."""
+        """Initialize.
+
+        ``on_connection_change(connected, reconnect)`` is called when the
+        socket becomes usable (authenticated and subscribed) and when it is
+        lost. ``reconnect`` is True when a connection follows an earlier one,
+        meaning pushes may have been missed in between.
+        """
         self._session = session
         self._token_provider = token_provider
         self._on_notification = on_notification
         self._token_refresher = token_refresher
+        self._on_connection_change = on_connection_change
         self._subscriptions: list[tuple[str, int]] = []
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
         self._ready = asyncio.Event()
+        self._connected = False
+        self._ever_connected = False
+        self._down_since: float | None = None
+        self._outage_logged = False
+
+    @property
+    def connected(self) -> bool:
+        """Return True while the socket is authenticated and subscribed."""
+        return self._connected
+
+    def _notify_connection_change(self, connected: bool, reconnect: bool) -> None:
+        if self._on_connection_change is None:
+            return
+        try:
+            self._on_connection_change(connected, reconnect)
+        except Exception:
+            _LOGGER.exception("Leviton WebSocket connection callback raised")
+
+    def _mark_connected(self) -> None:
+        loop = asyncio.get_running_loop()
+        downtime = loop.time() - self._down_since if self._down_since else None
+        long_outage = downtime is not None and downtime >= OUTAGE_REPORT_THRESHOLD
+        # A first connection that only succeeded after a long outage can also
+        # have missed changes since setup's initial fetch.
+        reconnect = self._ever_connected or long_outage
+        if long_outage:
+            _LOGGER.warning(
+                "Leviton push reconnected after %dm%02ds; refreshing device state",
+                downtime // 60,
+                downtime % 60,
+            )
+        elif reconnect:
+            _LOGGER.info("Leviton push reconnected; refreshing device state")
+        self._connected = True
+        self._ever_connected = True
+        self._down_since = None
+        self._outage_logged = False
+        self._notify_connection_change(True, reconnect)
+
+    def _mark_disconnected(self) -> None:
+        self._connected = False
+        self._down_since = asyncio.get_running_loop().time()
+        _LOGGER.info("Leviton push disconnected; reconnecting")
+        self._notify_connection_change(False, False)
 
     def set_subscriptions(self, subs: list[tuple[str, int]]) -> None:
         """Replace the subscription set; takes effect on next connect."""
@@ -139,6 +202,8 @@ class LevitonWebSocket:
             finally:
                 self._ready.clear()
                 self._ws = None
+                if self._connected:
+                    self._mark_disconnected()
 
             if outcome == "auth_failed":
                 # The usual cause is an expired bearer. Ask for a fresh
@@ -164,7 +229,8 @@ class LevitonWebSocket:
                 delay = INITIAL_RECONNECT_DELAY
 
             if not self._stop.is_set():
-                await self._sleep_or_stop(delay)
+                jitter = random.uniform(1 - RECONNECT_JITTER, 1 + RECONNECT_JITTER)
+                await self._sleep_or_stop(delay * jitter)
                 delay = min(delay * 2, MAX_RECONNECT_DELAY)
 
     async def _async_refresh_token(self) -> bool:
@@ -207,10 +273,22 @@ class LevitonWebSocket:
                     return auth_outcome
                 self._ready.set()
                 await self._send_subscriptions()
+                self._mark_connected()
                 await self._receive_loop(ws)
                 return "ok"
-        except aiohttp.ClientError:
-            _LOGGER.warning("Leviton WebSocket connection error", exc_info=True)
+        except aiohttp.ClientError as err:
+            # Once per outage at warning level; the retries that follow every
+            # few seconds would otherwise flood the log for its duration.
+            if self._outage_logged:
+                _LOGGER.debug("Leviton WebSocket connection error: %s", err)
+            else:
+                self._outage_logged = True
+                _LOGGER.warning(
+                    "Leviton push connection failed (%s); retrying in the background",
+                    err,
+                )
+            if self._down_since is None:
+                self._down_since = asyncio.get_running_loop().time()
             return "transient"
 
     async def _authenticate(

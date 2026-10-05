@@ -21,6 +21,9 @@ DOMAIN: str = "leviton_decora_smart_wifi"
 
 EVENT_NOTIFICATION: str = f"{DOMAIN}_event"
 UPDATE_NOTIFICATION: str = f"{DOMAIN}_update"
+# Dispatcher signal (suffixed with the config entry id) sent when the cloud
+# push WebSocket connects or disconnects.
+PUSH_STATUS_SIGNAL: str = f"{DOMAIN}_push_status"
 
 UNDO_UPDATE_LISTENER: str = "undo_update_listener"
 
