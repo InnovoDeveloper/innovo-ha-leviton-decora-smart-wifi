@@ -61,6 +61,7 @@ async def async_setup_entry(
 class LevitonLightEntity(LightEntity, LevitonEntity):
     """Representation of a Leviton Decora Smart Wi-Fi light entity."""
 
+    _attr_entity_registry_enabled_default = True
     entity_description: LevitonLightEntityDescription
 
     @property
@@ -72,7 +73,7 @@ class LevitonLightEntity(LightEntity, LevitonEntity):
     def brightness(self) -> int | None:
         """Return the brightness of this light between 0..255."""
         if self.device is not None and self.device.brightness is not None:
-            return int(self.device.brightness * 255 / 100)
+            return round(self.device.brightness * 255 / 100)
         return None
 
     @property
@@ -93,7 +94,19 @@ class LevitonLightEntity(LightEntity, LevitonEntity):
         """Turn the entity on."""
         if self.device is not None:
             if ATTR_BRIGHTNESS in kwargs:
-                self.device.set_brightness(int(kwargs[ATTR_BRIGHTNESS] * 100 / 255))
+                # round(), not int(): int() truncates and turns e.g. 75% (191)
+                # into 74%, so a repeated level would never match below.
+                level = round(kwargs[ATTR_BRIGHTNESS] * 100 / 255)
+                if level != self.device.brightness:
+                    self.device.set_brightness(level)
+                else:
+                    # Re-sending the brightness the switch already holds
+                    # ({"power": "ON", "brightness": <same>}) leaves the paddle
+                    # unable to turn the load off: it snaps back on at that
+                    # level. The switch keeps its level while off, so power ON
+                    # alone restores it. Sent even if we think it's already on,
+                    # so a missed push can't turn this into a silent no-op.
+                    self.device.turn_on()
             else:
                 self.device.turn_on()
 
