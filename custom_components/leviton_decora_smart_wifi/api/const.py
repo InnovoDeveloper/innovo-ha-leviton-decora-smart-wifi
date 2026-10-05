@@ -33,6 +33,7 @@ class DeviceGeneration(IntEnum):
 
     ONE = 1
     TWO = 2
+    THREE = 3
 
 
 class DeviceType(StrEnum):
@@ -237,6 +238,11 @@ SUPPORTED_DEVICES = [
         DEVICE_GENERATION: DeviceGeneration.TWO,
     },
     {
+        DEVICE_MODEL: "D2710",
+        DEVICE_TYPE: [DeviceType.LIGHT],
+        DEVICE_GENERATION: DeviceGeneration.THREE,
+    },
+    {
         DEVICE_MODEL: "D2ELV",
         DEVICE_TYPE: [DeviceType.LIGHT],
         DEVICE_GENERATION: DeviceGeneration.TWO,
@@ -272,14 +278,20 @@ SUPPORTED_DEVICES = [
         DEVICE_GENERATION: DeviceGeneration.TWO,
     },
     {
+        DEVICE_MODEL: "D315S",
+        DEVICE_TYPE: [DeviceType.SWITCH],
+        DEVICE_GENERATION: DeviceGeneration.THREE,
+    },
+    {
         # Matter-capable dimmer. Reports canSetLevel/brightness/minLevel/
         # maxLevel/presetLevel/fadeOnTime/fadeOffTime exactly like the D26HD,
-        # so it is a LIGHT. Generation TWO matches its D26HD sibling; the
+        # so it is a LIGHT. Generation THREE as upstream (2.2.0) classifies it;
+        # THREE shares TWO's firmware app and button handling, and the
         # generation only selects the firmware release-notes lookup (install
         # itself is server-side via apply_ota), so it cannot mis-flash.
         DEVICE_MODEL: "D36HD",
         DEVICE_TYPE: [DeviceType.LIGHT],
-        DEVICE_GENERATION: DeviceGeneration.TWO,
+        DEVICE_GENERATION: DeviceGeneration.THREE,
     },
     {
         DEVICE_MODEL: "MLWSB",
@@ -356,11 +368,9 @@ SUPPORTED_DEVICES_FAN = [
     if DeviceType.FAN in device[DEVICE_TYPE]
 ]
 
-SUPPORTED_DEVICES_GENERATION_TWO = [
-    device[DEVICE_MODEL]
-    for device in SUPPORTED_DEVICES
-    if device[DEVICE_GENERATION] == DeviceGeneration.TWO
-]
+SUPPORTED_DEVICES_GENERATION_MAP = {
+    device[DEVICE_MODEL]: device[DEVICE_GENERATION] for device in SUPPORTED_DEVICES
+}
 
 SUPPORTED_DEVICES_GFCI = [
     device[DEVICE_MODEL]
@@ -532,6 +542,7 @@ class FirmwareAppID(StrEnum):
 FIRMWARE_APP_MAP = {
     DeviceGeneration.ONE: FirmwareAppID.DECORA_SMART,
     DeviceGeneration.TWO: FirmwareAppID.DECORA_SMART_2,
+    DeviceGeneration.THREE: FirmwareAppID.DECORA_SMART_2,
 }
 
 
