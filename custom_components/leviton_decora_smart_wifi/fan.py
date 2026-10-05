@@ -60,6 +60,7 @@ async def async_setup_entry(
 class LevitonFanEntity(FanEntity, LevitonEntity):
     """Representation of a Leviton Decora Smart Wi-Fi fan entity."""
 
+    _attr_entity_registry_enabled_default = True
     entity_description: LevitonFanEntityDescription
 
     @property

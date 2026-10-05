@@ -29,6 +29,14 @@ from .util import generate_device_identifier
 class LevitonEntity(CoordinatorEntity[LevitonDataUpdateCoordinator]):
     """Representation of a Leviton entity."""
 
+    # Only entities that control the attached load (lights, fans, the on/off
+    # switch of an outlet or switch) start enabled. Device settings, firmware,
+    # diagnostics, buttons, scenes, schedules and events are created disabled so
+    # a control system importing the light/switch domains (e.g. ELAN) only finds
+    # loads. Applies when an entity is first registered; users can enable any of
+    # them afterwards, and existing installs keep their current state.
+    _attr_entity_registry_enabled_default = False
+
     def __init__(
         self,
         coordinator: LevitonDataUpdateCoordinator,
